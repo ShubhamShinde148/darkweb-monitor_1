@@ -1,1 +1,1 @@
-web: bash start.sh
+web: gunicorn darkweb_monitor.app:app
