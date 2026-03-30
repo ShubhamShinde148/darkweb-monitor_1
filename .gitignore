@@ -8,6 +8,9 @@
 *.env
 secrets.py
 config.local.py
+# Add sensitive files and folders
+*.json
+instance/
 
 # ==================== Python ====================
 # Byte-compiled / optimized / DLL files
