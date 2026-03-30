@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Download Certificate</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Download Your Certificate</h1>
+        <p>Congratulations on completing your course! You can download your certificate using the link below:</p>
+        <a href="{{ certificate_url }}" class="download-button">Download Certificate</a>
+        <p>If you have any issues, please contact support.</p>
+    </div>
+</body>
+</html>

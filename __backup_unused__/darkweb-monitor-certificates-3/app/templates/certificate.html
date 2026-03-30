@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <title>Certificate</title>
+</head>
+<body>
+    <div class="certificate-container">
+        <h1>Certificate of Achievement</h1>
+        <p>This certifies that</p>
+        <h2>{{ certificate.name }}</h2>
+        <p>has successfully completed the course</p>
+        <h3>{{ certificate.course }}</h3>
+        <p>Date of Issue: {{ certificate.date_issued }}</p>
+        <p>Certificate ID: {{ certificate.certificate_id }}</p>
+        <div class="qr-code">
+            <img src="{{ certificate.qr_code_url }}" alt="QR Code for verification">
+        </div>
+        <p>Verify this certificate at: <a href="{{ certificate.verification_url }}">{{ certificate.verification_url }}</a></p>
+    </div>
+</body>
+</html>

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <title>Certificate</title>
+</head>
+<body>
+    <div class="certificate-container">
+        <h1>Certificate of Achievement</h1>
+        <p>This certifies that</p>
+        <h2>{{ certificate.name }}</h2>
+        <p>has successfully completed the course</p>
+        <h3>{{ certificate.course }}</h3>
+        <p>on</p>
+        <h4>{{ certificate.date }}</h4>
+        <p>Certificate ID: <strong>{{ certificate.id }}</strong></p>
+        <p>Verification Hash: <strong>{{ certificate.verification_hash }}</strong></p>
+        <div class="signature">
+            <p>____________________</p>
+            <p>Authorized Signature</p>
+        </div>
+        <a href="{{ url_for('download_certificate', certificate_id=certificate.id) }}" class="download-button">Download Certificate</a>
+    </div>
+</body>
+</html>

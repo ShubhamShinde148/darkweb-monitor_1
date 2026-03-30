@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <title>Admin Dashboard - Dark Web Monitor</title>
+</head>
+<body>
+    <div class="container">
+        <h1>Admin Dashboard</h1>
+        <div class="stats">
+            <h2>Certificate Statistics</h2>
+            <p>Total Certificates Issued: {{ total_certificates }}</p>
+            <p>Recent Certificates: {{ recent_certificates }}</p>
+            <p>Top Users by Score: {{ top_users }}</p>
+        </div>
+        <div class="logs">
+            <h2>Verification Logs</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Certificate ID</th>
+                        <th>User ID</th>
+                        <th>Verification Status</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for log in verification_logs %}
+                    <tr>
+                        <td>{{ log.certificate_id }}</td>
+                        <td>{{ log.user_id }}</td>
+                        <td>{{ log.status }}</td>
+                        <td>{{ log.date }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</body>
+</html>

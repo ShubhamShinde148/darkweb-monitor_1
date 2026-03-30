@@ -1,0 +1,1 @@
+# This file provides documentation for database migrations, if applicable.
