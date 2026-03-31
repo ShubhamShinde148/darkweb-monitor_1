@@ -10,7 +10,9 @@ import os
 import io
 import re
 import uuid
+import logging
 import requests
+from time import time
 from urllib.parse import urlsplit
 from dotenv import load_dotenv
 
@@ -23,6 +25,7 @@ from flask_cors import CORS
 import json
 from datetime import datetime
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.utils import secure_filename
 
 from breach_checker import BreachChecker
 from email_checker import EmailChecker
@@ -58,20 +61,45 @@ from learning_mode import LearningModeEngine
 
 import firebase_admin
 from firebase_admin import credentials, firestore, auth as firebase_auth
+
 from google.cloud.firestore_v1.base_query import FieldFilter
+db = None
+try:
+    if os.path.exists("darkweb-monitor-fee1c-firebase-adminsdk-fbsvc-be2b34d535.json"):
+        cred = credentials.Certificate("darkweb-monitor-fee1c-firebase-adminsdk-fbsvc-be2b34d535.json")
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        print("✅ Firebase connected")
+    else:
+        print("⚠️ Firebase JSON not found (Skipping Firebase)")
+except Exception as e:
+    print("❌ Firebase error:", e)
 
-cred = credentials.Certificate("darkweb-monitor-fee1c-firebase-adminsdk-fbsvc-be2b34d535.json")
-firebase_admin.initialize_app(cred)
+# --- GLOBAL SAFE DB HELPER ---
+def safe_db():
+    return db if db else None
 
-db = firestore.client()
+# --- LOGGING ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+logger = logging.getLogger(__name__)
 
-print("Firebase connected successfully")
+# --- RATE LIMITING ---
+_request_log = {}
+
+def is_rate_limited(ip, limit=60, window=60):
+    now = time()
+    _request_log.setdefault(ip, [])
+    _request_log[ip] = [t for t in _request_log[ip] if now - t < window]
+    if len(_request_log[ip]) >= limit:
+        return True
+    _request_log[ip].append(now)
+    return False
 
 app = Flask(__name__, 
             static_folder='static',
             template_folder='templates')
 os.makedirs(app.instance_path, exist_ok=True)
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'change-this-secret-key-in-production')
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY') or os.urandom(24)
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
 app.config['REMEMBER_COOKIE_HTTPONLY'] = True
@@ -120,8 +148,8 @@ def normalize_redirect_target(target):
     if parsed.scheme or parsed.netloc:
         if parsed.netloc and parsed.netloc != request.host:
             return None
-        if parsed.query:
-            target = f"{target}?{parsed.query}"
+    if parsed.query:
+        target = f"{parsed.path}?{parsed.query}"
 
     if not target.startswith('/'):
         return None
@@ -140,12 +168,16 @@ def is_valid_email(email):
 
 def get_user_by_id(user_id):
     """Look up a user by Firestore document ID."""
+    if not db:
+        return None
     doc = db.collection('users').document(str(user_id)).get()
     return User.from_doc(doc)
 
 
 def get_user_by_username(username):
     """Look up a user by username (case-insensitive)."""
+    if not db:
+        return None
     docs = (db.collection('users')
             .where(filter=FieldFilter('username_lower', '==', username.strip().lower()))
             .limit(1)
@@ -157,6 +189,8 @@ def get_user_by_username(username):
 
 def get_user_by_email(email):
     """Look up a user by email (case-insensitive)."""
+    if not db:
+        return None
     docs = (db.collection('users')
             .where(filter=FieldFilter('email', '==', email.strip().lower()))
             .limit(1)
@@ -168,6 +202,8 @@ def get_user_by_email(email):
 
 def get_user_by_identifier(identifier):
     """Look up a user by username or email."""
+    if not db:
+        return None
     user = get_user_by_email(identifier)
     if user:
         return user
@@ -176,10 +212,11 @@ def get_user_by_identifier(identifier):
 
 def create_user(username, email, password):
     """Create a new user document in Firestore and return a User object."""
+    if not db:
+        return None
     password_hash = generate_password_hash(password)
     user_id = str(uuid.uuid4())
     now = datetime.now().isoformat()
-
     db.collection('users').document(user_id).set({
         'username': username.strip(),
         'username_lower': username.strip().lower(),
@@ -188,12 +225,13 @@ def create_user(username, email, password):
         'created_at': now,
         'last_login': now
     })
-
     return get_user_by_id(user_id)
 
 
 def update_last_login(user_id):
     """Update the last_login timestamp for a user."""
+    if not db:
+        return
     db.collection('users').document(str(user_id)).update({
         'last_login': datetime.now().isoformat()
     })
@@ -203,6 +241,8 @@ def update_last_login(user_id):
 
 def log_scan(user_id, tool_used, input_value, result_summary, risk_score=None):
     """Save a scan record to the Firestore scan_history collection."""
+    if not db:
+        return None
     scan_id = str(uuid.uuid4())
     db.collection('scan_history').document(scan_id).set({
         'user_id': str(user_id),
@@ -217,6 +257,8 @@ def log_scan(user_id, tool_used, input_value, result_summary, risk_score=None):
 
 def get_user_scans(user_id, limit=20):
     """Fetch recent scan history for a user, newest first."""
+    if not db:
+        return []
     docs = (db.collection('scan_history')
             .where(filter=FieldFilter('user_id', '==', str(user_id)))
             .stream())
@@ -233,6 +275,8 @@ def get_user_scans(user_id, limit=20):
 
 def save_security_report(user_id, report_type, generated_data, risk_level):
     """Save a security report to Firestore."""
+    if not db:
+        return None
     report_id = str(uuid.uuid4())
     db.collection('security_reports').document(report_id).set({
         'user_id': str(user_id),
@@ -245,6 +289,8 @@ def save_security_report(user_id, report_type, generated_data, risk_level):
 
 def get_user_reports(user_id, limit=10):
     """Fetch recent security reports for a user."""
+    if not db:
+        return []
     docs = (db.collection('security_reports')
             .where(filter=FieldFilter('user_id', '==', str(user_id)))
             .stream())
@@ -651,7 +697,7 @@ def api_learning_topic_content():
                     return jsonify({
                         "title": t["title"],
                         "difficulty": difficulty,
-                        "explanation": f"This is a static fallback explanation for {t["title"]}.",
+                        "explanation": f"This is a static fallback explanation for {t['title']}.",
                         "tools": [],
                         "practice": "No AI content available. Practice with online resources.",
                         "quick_notes": [],
@@ -717,6 +763,7 @@ def api_steg_encode():
             return jsonify({'error': 'Message is required'}), 400
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
+        filename = secure_filename(file.filename or '')
         image_data = file.read()
         if len(image_data) > steganography_tool.MAX_FILE_SIZE:
             return jsonify({'error': 'File too large (max 10MB)'}), 400
@@ -743,6 +790,7 @@ def api_steg_decode():
         file = request.files['file']
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
+        filename = secure_filename(file.filename or '')
         image_data = file.read()
         if len(image_data) > steganography_tool.MAX_FILE_SIZE:
             return jsonify({'error': 'File too large (max 10MB)'}), 400
@@ -760,6 +808,7 @@ def api_steg_capacity():
         if 'file' not in request.files:
             return jsonify({'error': 'No image uploaded'}), 400
         file = request.files['file']
+        filename = secure_filename(file.filename or '')
         image_data = file.read()
         info = steganography_tool.get_capacity(image_data)
         return jsonify(info)
@@ -776,8 +825,11 @@ def api_check_password():
     """
     global last_results
     
+    if is_rate_limited(request.remote_addr):
+        return jsonify({'error': 'Too many requests'}), 429
+    
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         password = data.get('password', '')
         
         if not password:
@@ -836,8 +888,11 @@ def api_check_email():
     """
     global last_results
     
+    if is_rate_limited(request.remote_addr):
+        return jsonify({'error': 'Too many requests'}), 429
+    
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         email = data.get('email', '')
         
         if not email or '@' not in email:
@@ -894,7 +949,7 @@ def api_generate_password():
     }
     """
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {} or {}
         gen_type = data.get('type', 'random')
         length = data.get('length', 16)
         count = data.get('count', 1)
@@ -951,8 +1006,11 @@ def api_batch_check():
     """
     global last_results
     
+    if is_rate_limited(request.remote_addr):
+        return jsonify({'error': 'Too many requests'}), 429
+    
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         check_type = data.get('type', 'passwords')
         items = data.get('items', [])
         
@@ -998,7 +1056,7 @@ def api_generate_report():
         if not last_results:
             return jsonify({'error': 'No results to export'}), 400
         
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {} or {}
         password = data.get('password', '********')
         
         filepath = report_generator.generate(
@@ -1031,7 +1089,7 @@ def api_export():
         if not last_results:
             return jsonify({'error': 'No results to export'}), 400
         
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {} or {}
         fmt = data.get('format', 'json')
         
         if fmt == 'all':
@@ -1065,6 +1123,8 @@ def api_export():
 def download_file(filename):
     """Download an exported file."""
     try:
+        if ".." in filename:
+            return jsonify({'error': 'Invalid filename'}), 400
         # Check exports folder first
         exports_path = os.path.join(os.getcwd(), 'exports')
         if os.path.exists(os.path.join(exports_path, filename)):
@@ -1128,8 +1188,11 @@ def api_username_osint():
     """
     global last_results
     
+    if is_rate_limited(request.remote_addr):
+        return jsonify({'error': 'Too many requests'}), 429
+    
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         username = data.get('username', '').strip()
         platforms = data.get('platforms')  # Optional list of specific platforms
         
@@ -1142,9 +1205,9 @@ def api_username_osint():
         if result['success']:
             last_results = result
             # Log scan to Firestore
-                    # if current_user.is_authenticated:
-                    #     summary = f"Found: {result.get('total_found', 0)}/{result.get('total_checked', 0)} platforms"
-                    #     log_scan(current_user.id, 'Username OSINT', username, summary)        
+            # if current_user.is_authenticated:
+            #     summary = f"Found: {result.get('total_found', 0)}/{result.get('total_checked', 0)} platforms"
+            #     log_scan(current_user.id, 'Username OSINT', username, summary)        
         return jsonify(result)
         
     except Exception as e:
@@ -1170,8 +1233,11 @@ def api_domain_scan():
     """
     global last_results
     
+    if is_rate_limited(request.remote_addr):
+        return jsonify({'error': 'Too many requests'}), 429
+    
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         domain = data.get('domain', '').strip()
         full_scan = data.get('full_scan', True)
         
@@ -1187,11 +1253,11 @@ def api_domain_scan():
         if result['success']:
             last_results = result
             # Log scan to Firestore
-                    # if current_user.is_authenticated:
-                    #     grade = result.get('security_grade', 'N/A')
-                    #     score = result.get('security_score', 0)
-                    #     summary = f"Grade: {grade}, Score: {score}"
-                    #     log_scan(current_user.id, 'Domain Security Scan', domain, summary, score)        
+            # if current_user.is_authenticated:
+            #     grade = result.get('security_grade', 'N/A')
+            #     score = result.get('security_score', 0)
+            #     summary = f"Grade: {grade}, Score: {score}"
+            #     log_scan(current_user.id, 'Domain Security Scan', domain, summary, score)        
         return jsonify(result)
         
     except Exception as e:
@@ -1208,7 +1274,7 @@ def api_ip_intelligence():
     global last_results
     
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         ip = data.get('ip', '').strip()
         
         if not ip:
@@ -1220,10 +1286,10 @@ def api_ip_intelligence():
         if result['success']:
             last_results = result
             # Log scan to Firestore
-                    # if current_user.is_authenticated:
-                    #     threat = result.get('threats', {}).get('threat_level', 'N/A')
-                    #     summary = f"Threat level: {threat}"
-                    #     log_scan(current_user.id, 'IP Intelligence', ip, summary)        
+            # if current_user.is_authenticated:
+            #     threat = result.get('threats', {}).get('threat_level', 'N/A')
+            #     summary = f"Threat level: {threat}"
+            #     log_scan(current_user.id, 'IP Intelligence', ip, summary)        
         return jsonify(result)
         
     except Exception as e:
@@ -1240,7 +1306,7 @@ def api_whois_lookup():
     global last_results
 
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {} or {}
         domain = data.get('domain', '').strip()
 
         if not domain:
@@ -1294,7 +1360,7 @@ def api_website_technology_detector():
 def api_ip_quick():
     """Quick IP lookup with essential information only."""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         ip = data.get('ip', '').strip()
         
         if not ip:
@@ -1323,7 +1389,7 @@ def api_risk_assessment():
     }
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         
         # Reset engine for new assessment
         cyber_risk_engine.reset()
@@ -1388,7 +1454,7 @@ def api_security_recommendations():
     }
     """
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {} or {}
         
         # Set context
         security_advisor.set_context(data)
@@ -1415,7 +1481,7 @@ def api_quick_wins():
 def api_action_plan():
     """Generate security action plan."""
     try:
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {} or {}
         timeframe = data.get('timeframe', 'week')
         
         # Set context if provided
@@ -1437,7 +1503,7 @@ def api_breach_timeline():
     Request body: {"breaches": [array of breach objects]}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         breaches = data.get('breaches', [])
         
         if not breaches:
@@ -1486,7 +1552,7 @@ def api_comprehensive_scan():
     global last_results
     
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         results = {
             'success': True,
             'scans_performed': [],
@@ -1628,6 +1694,8 @@ def api_comprehensive_scan():
 
 def _save_quiz_to_firestore(quiz_id, questions):
     """Persist quiz session to Firestore so it survives server restarts."""
+    if not db:
+        return
     try:
         doc_data = {
             'quiz_id': quiz_id,
@@ -1653,6 +1721,8 @@ def _save_quiz_to_firestore(quiz_id, questions):
 
 def _restore_quiz_from_firestore(quiz_id):
     """Restore a quiz session from Firestore into the in-memory dict."""
+    if not db:
+        return False
     try:
         doc = db.collection('quiz_sessions').document(quiz_id).get()
         if not doc.exists:
@@ -1682,6 +1752,8 @@ def _restore_quiz_from_firestore(quiz_id):
 
 def _delete_quiz_from_firestore(quiz_id):
     """Remove a quiz session from Firestore after submission."""
+    if not db:
+        return
     try:
         db.collection('quiz_sessions').document(quiz_id).delete()
     except Exception as e:
@@ -1706,6 +1778,23 @@ def _send_certificate_email(to_email, participant_name, certificate_id, result, 
     pct = result.percentage
     status = 'PASSED' if result.passed else 'NOT PASSED'
     status_color = '#00ff88' if result.passed else '#ff0055'
+
+    # Build category rows for HTML
+    cat_rows = ''
+    for cat, sc in result.category_scores.items():
+        cat_pct = round(sc.get('correct', 0) / sc.get('total', 1) * 100) if sc.get('total', 0) > 0 else 0
+        bar_color = '#00ff88' if cat_pct >= 70 else '#ffaa00' if cat_pct >= 40 else '#ff0055'
+        cat_rows += f'''<tr>
+                <td style="padding:8px 12px; color:#e6edf3; border-bottom:1px solid #2d3548;">{cat}</td>
+                <td style="padding:8px 12px; border-bottom:1px solid #2d3548;">
+                    <div style="background:rgba(255,255,255,0.05); border-radius:4px; height:8px; width:100%;">
+                        <div style="background:{bar_color}; height:8px; border-radius:4px; width:{cat_pct}%;"></div>
+                    </div>
+                </td>
+                <td style="padding:8px 12px; color:#e6edf3; text-align:right; border-bottom:1px solid #2d3548;">{cat_pct}%</td>
+            </tr>'''
+
+    cert_url = f"http://localhost:8080/certificate/{certificate_id}"
 
     html_body = f'''<!DOCTYPE html>
 <html><head><meta charset="UTF-8"></head>
@@ -1757,7 +1846,8 @@ def _send_certificate_email(to_email, participant_name, certificate_id, result, 
     </table>
   </td></tr>
   <tr><td style="padding:20px 30px 30px; text-align:center;">
-    <a href="{cert_url}" style="display:inline-block; padding:12px 28px; background:#00ff88; color:#0a0e17; text
+    <a href="{cert_url}" style="display:inline-block; padding:12px 28px; background:#00ff88; color:#0a0e17; text-decoration:none; border-radius:8px; font-weight:700; font-size:15px;">View Full Certificate</a>
+  </td></tr>
   </td></tr>
   <tr><td style="background:#0d1117; padding:16px; text-align:center; border-top:1px solid #2d3548;">
     <p style="margin:0; color:#555; font-size:11px;">&copy; 2026 Dark Web Monitor. All rights reserved.</p>
@@ -1767,12 +1857,12 @@ def _send_certificate_email(to_email, participant_name, certificate_id, result, 
 </body></html>'''
 
     plain_text = (
-        f"Congratulations {participant_name}!\\n\\
-        f"You have completed the Cybersecurity Awareness Quiz.\\n"
-        f"Score: {result.score}/{result.total} ({pct}%) — {status}\\n"
-        f"Certificate ID: {certificate_id}\\n"
-        f"Date: {result.completion_time}\\n\\n"
-        f"Your certificate PDF is attached.\\n\\n"
+        f"Congratulations {participant_name}!\n"
+        f"You have completed the Cybersecurity Awareness Quiz.\n"
+        f"Score: {result.score}/{result.total} ({pct}%) — {status}\n"
+        f"Certificate ID: {certificate_id}\n"
+        f"Date: {result.completion_time}\n\n"
+        f"Your certificate PDF is attached.\n\n"
         f"— Dark Web Monitor Security Lab"
     )
 
@@ -1817,7 +1907,7 @@ def api_generate_quiz():
     try:
         # Get parameters from query string or JSON body
         if request.method == 'POST':
-            data = request.get_json() or {}
+            data = request.get_json(silent=True) or {} or {}
             count = data.get('count', 10)
             difficulty = data.get('difficulty', 'intermediate')
         else:
@@ -1881,7 +1971,7 @@ def api_quiz_start():
     """Start a new quiz session (static questions)."""
     try:
         # Check if AI mode is requested
-        data = request.get_json() or {}
+        data = request.get_json(silent=True) or {} or {}
         use_ai = data.get('use_ai', False)
         difficulty = data.get('difficulty', 'intermediate')
         count = data.get('count', 10)
@@ -1924,32 +2014,39 @@ def api_quiz_start():
 def api_quiz_submit():
     """Submit quiz answers and get results."""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         quiz_id = data.get('quiz_id')
         participant_name = data.get('participant_name', 'Anonymous')
         email = data.get('email', '')
         answers = data.get('answers', {})
-        
+
+        # Define required variables for certificate and user info
+        certificate_id = f"DWM-CERT-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
+        user_email = email
+        user_id = "anonymous"
+        username = participant_name
+
         print(f'[QUIZ] Submit request for quiz_id={quiz_id}, in_memory={quiz_id in cybersecurity_quiz.active_quizzes}')
-        
+
         # Convert string keys to int
         answers = {int(k): v for k, v in answers.items()}
-        
+
         # Restore quiz from Firestore if lost from memory (e.g. server restart)
         if quiz_id not in cybersecurity_quiz.active_quizzes:
             print(f'[QUIZ] Quiz {quiz_id} not in memory, attempting Firestore restore...')
             if not _restore_quiz_from_firestore(quiz_id):
                 return jsonify({'success': False, 'error': 'Invalid quiz ID or quiz expired'}), 400
-        
+
         # Prevent duplicate: check if this quiz_id was already submitted
-        dup_check = db.collection('quiz_certificates') \
-            .where('quiz_id', '==', quiz_id).limit(1).stream()
-        if any(True for _ in dup_check):
-            return jsonify({'success': False, 'error': 'This quiz has already been submitted'}), 400
-        
+        if db:
+            dup_check = db.collection('quiz_certificates') \
+                .where('quiz_id', '==', quiz_id).limit(1).stream()
+            if any(True for _ in dup_check):
+                return jsonify({'success': False, 'error': 'This quiz has already been submitted'}), 400
+
         # Get detailed results before submitting
         detailed = cybersecurity_quiz.get_detailed_results(quiz_id, answers)
-        
+
         # Submit and get result
         result = cybersecurity_quiz.submit_quiz(quiz_id, participant_name, email, answers)
         
@@ -1960,9 +2057,11 @@ def api_quiz_submit():
         _delete_quiz_from_firestore(quiz_id)
         
         # ── 1. Generate Certificate ID ──
-        cert_seq = db.collection('quiz_certificates').document('cert_counter')
-        counter_doc = cert_seq.get()
-        seq_num = (counter_doc.to_dict().get('seq', 0) + 1) if counter_doc.exists else 1
+        seq_num = 1
+        if db:
+            cert_seq = db.collection('quiz_certificates').document('cert_counter')
+            counter_doc = cert_seq.get()
+            seq_num = (counter_doc.to_dict().get('seq', 0) + 1) if counter_doc.exists else 1
        
         if not user_email:
             user_email = email  # fallback to form-submitted email
@@ -1996,8 +2095,9 @@ def api_quiz_submit():
             'certificate_file': f'certificates/{pdf_filename}',
             'created_at': datetime.now().isoformat()
         }
-        db.collection('quiz_certificates').document(certificate_id).set(cert_record)
-        print(f'[CERT] Firestore record saved: {certificate_id}')
+        if db:
+            db.collection('quiz_certificates').document(certificate_id).set(cert_record)
+            print(f'[CERT] Firestore record saved: {certificate_id}')
         
         # ── 5. Auto-email certificate to user ──
         email_sent = False
@@ -2041,7 +2141,7 @@ def api_quiz_submit():
 def api_quiz_certificate():
     """Generate and download a PDF certificate."""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         result_data = data.get('result', {})
         
         # Create QuizResult object
@@ -2081,6 +2181,8 @@ def api_quiz_certificate():
 def download_saved_certificate(certificate_id):
     """Download a previously saved certificate PDF from the certificates folder."""
     import re
+    if not db:
+        return jsonify({'success': False, 'error': 'Database unavailable'}), 503
     # Validate certificate_id format to prevent path traversal
     if not re.match(r'^DWM-CERT-\d{4}-[A-Z0-9]+$', certificate_id):
         return jsonify({'success': False, 'error': 'Invalid certificate ID format'}), 400
@@ -2111,6 +2213,8 @@ def download_saved_certificate(certificate_id):
 @app.route('/certificate/<certificate_id>')
 def certificate_page(certificate_id):
     """Display a web-based certificate page."""
+    if not db:
+        return render_template('404.html'), 503
     try:
         doc = db.collection('quiz_certificates').document(certificate_id).get()
         if not doc.exists:
@@ -2125,6 +2229,8 @@ def certificate_page(certificate_id):
 @app.route('/verify/<certificate_id>')
 def verify_certificate(certificate_id):
     """Public verification endpoint for certificates."""
+    if not db:
+        return jsonify({'valid': False, 'error': 'Database unavailable'}), 503
     try:
         doc = db.collection('quiz_certificates').document(certificate_id).get()
         if not doc.exists:
@@ -2156,27 +2262,29 @@ def certificate_history_page():
 # @login_required
 def api_certificate_history():
     """Get all certificates for the current logged-in user."""
-    # try:
-    #     certs_ref = db.collection('quiz_certificates') \
-    #         .where('user_id', '==', current_user.id) \
-    #         .order_by('created_at', direction=firestore.Query.DESCENDING)
-    #     docs = certs_ref.stream()
-    #     certificates = []
-    #     for doc in docs:
-    #         d = doc.to_dict()
-    #         if doc.id == 'cert_counter':
-    #             continue
-    #         certificates.append(d)
-    #     return jsonify({'success': True, 'certificates': certificates})
-    # except Exception as e:
-    #     return jsonify({'success': True, 'certificates': []})
+    try:
+        certs_ref = db.collection('quiz_certificates') \
+            .where('user_id', '==', current_user.id) \
+            .order_by('created_at', direction=firestore.Query.DESCENDING)
+        docs = certs_ref.stream()
+        certificates = []
+        for doc in docs:
+            d = doc.to_dict()
+            if doc.id == 'cert_counter':
+                continue
+            certificates.append(d)
+        return jsonify({'success': True, 'certificates': certificates})
+    except Exception as e:
+        return jsonify({'success': True, 'certificates': []})
 
 
 @app.route('/api/verify-certificate', methods=['POST'])
 def api_verify_certificate_public():
     """Public API to verify a certificate by ID."""
+    if not db:
+        return jsonify({'valid': False, 'error': 'Database unavailable'}), 503
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         cert_id = data.get('certificate_id', '').strip()
         if not cert_id:
             return jsonify({'valid': False, 'error': 'Certificate ID is required'}), 400
@@ -2203,8 +2311,10 @@ def api_verify_certificate_public():
 # @login_required
 def api_email_certificate():
     """Send a certificate to the current user's registered email."""
+    if not db:
+        return jsonify({'success': False, 'error': 'Database unavailable'}), 503
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         cert_id = data.get('certificate_id', '').strip()
         if not cert_id:
             return jsonify({'success': False, 'error': 'Certificate ID is required'}), 400
@@ -2214,9 +2324,9 @@ def api_email_certificate():
             return jsonify({'success': False, 'error': 'Certificate not found'}), 404
         cert = doc.to_dict()
 
-        # user_email = current_user.email
-        # if not user_email:
-        #     return jsonify({'success': False, 'error': 'No email address on your account'}), 400
+        user_email = cert.get('email', '')
+        if not user_email:
+            return jsonify({'success': False, 'error': 'No email address associated with this certificate'}), 400
 
         sender_email = os.getenv('FEEDBACK_EMAIL_ADDRESS')
         sender_password = os.getenv('FEEDBACK_EMAIL_PASSWORD')
@@ -2338,7 +2448,7 @@ def api_hash_generator():
     Request body: {"text": "string", "algorithm": "md5|sha1|sha256|sha512" (optional)}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         text = data.get('text', '')
         algorithm = data.get('algorithm')
         
@@ -2381,7 +2491,7 @@ def api_hash_verify():
     Request body: {"text": "string", "hash": "string", "algorithm": "string" (optional)}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         text = data.get('text', '')
         hash_value = data.get('hash', '')
         algorithm = data.get('algorithm')
@@ -2408,7 +2518,7 @@ def api_base64():
     Request body: {"text": "string", "operation": "encode|decode", "url_safe": bool (optional)}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         text = data.get('text', '')
         operation = data.get('operation', 'encode')
         url_safe = data.get('url_safe', False)
@@ -2445,7 +2555,7 @@ def api_url_encoder():
     Request body: {"text": "string", "operation": "encode|decode|parse", "plus_encoding": bool}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         text = data.get('text', '')
         operation = data.get('operation', 'encode')
         plus_encoding = data.get('plus_encoding', False)
@@ -2485,7 +2595,7 @@ def api_jwt_decoder():
     Request body: {"token": "string"}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         token = data.get('token', '')
         
         if not token:
@@ -2516,7 +2626,7 @@ def api_password_strength():
     Request body: {"password": "string"}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         password = data.get('password', '')
         
         if not password:
@@ -2557,7 +2667,7 @@ def api_ip_lookup():
     Request body: {"ip": "string"}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         ip = data.get('ip', '')
         
         if not ip:
@@ -2608,7 +2718,7 @@ def api_dns_lookup():
     Request body: {"domain": "string", "record_types": ["A", "MX", ...] (optional)}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         domain = data.get('domain', '')
         record_types = data.get('record_types')
         
@@ -2638,7 +2748,7 @@ def api_dns_reverse():
     Request body: {"ip": "string"}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         ip = data.get('ip', '')
         
         if not ip:
@@ -2664,7 +2774,7 @@ def api_subdomain_finder():
     Request body: {"domain": "string", "quick": bool (optional)}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         domain = data.get('domain', '')
         quick = data.get('quick', True)
         
@@ -2697,7 +2807,7 @@ def api_text_binary():
     Request body: {"text": "string", "operation": "to_binary|from_binary|to_hex|from_hex|to_decimal|from_decimal|to_octal|from_octal|all"}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         text = data.get('text', '')
         operation = data.get('operation', 'all')
         
@@ -2748,7 +2858,7 @@ def api_rot13():
     Request body: {"text": "string", "operation": "rot13|rot47|caesar|atbash|reverse|brute", "shift": number (for caesar)}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         text = data.get('text', '')
         operation = data.get('operation', 'rot13')
         shift = data.get('shift', 13)
@@ -2799,9 +2909,8 @@ def api_metadata_extract():
         if file.filename == '':
             return jsonify({'error': 'No file selected'}), 400
         
-        # Read file data into memory (no permanent storage)
+        filename = secure_filename(file.filename or '')
         file_data = file.read()
-        filename = file.filename
         
         # Extract metadata
         result = metadata_extractor.extract(file_data, filename)
@@ -2855,7 +2964,7 @@ def api_submit_feedback():
     }
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         
         if not data:
             return jsonify({'error': 'No data provided'}), 400
@@ -2876,6 +2985,8 @@ def api_submit_feedback():
         }
         
         # Store in memory (replace with database in production)
+        if len(feedback_storage) > 1000:
+            feedback_storage.pop(0)
         feedback_storage.append(feedback_entry)
         
         # Send email notification (async-friendly, won't block response)
@@ -2926,7 +3037,7 @@ def submit_feedback_form():
     try:
         # Handle both JSON and form data
         if request.is_json:
-            data = request.get_json()
+            data = request.get_json(silent=True) or {}
         else:
             data = request.form.to_dict()
         
@@ -2961,6 +3072,8 @@ def submit_feedback_form():
         }
         
         # Store in memory
+        if len(feedback_storage) > 1000:
+            feedback_storage.pop(0)
         feedback_storage.append(feedback_entry)
         
         # Send email notification
@@ -3037,7 +3150,7 @@ def chatbot_api():
     Response: {"success": bool, "message": "string", "error": "string"}
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         
         if not data:
             return jsonify({
@@ -3096,7 +3209,7 @@ def chatbot_suggestions():
 def ask_ai():
     """Direct AI endpoint — simple request/response."""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         if not data or not data.get('message', '').strip():
             return jsonify({'reply': 'Please provide a message.'}), 400
 
@@ -3119,7 +3232,7 @@ def api_ip_threat_intel():
     Queries AbuseIPDB, OTX, GreyNoise, Shodan and returns a unified report.
     """
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         ip = data.get('ip', '').strip()
 
         if not ip:
@@ -3158,7 +3271,7 @@ def api_ip_threat_intel():
 def api_ip_threat_intel_report():
     """Generate a downloadable security report for an IP threat intel scan."""
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         report_data = data.get('report')
         if not report_data:
             return jsonify({'success': False, 'error': 'Report data is required'}), 400
@@ -3446,6 +3559,8 @@ PROTECTED_API_VIEWS = (
 
 @app.route("/firebase-test")
 def firebase_test():
+    if not db:
+        return "Firebase not configured", 503
 
     db.collection("test").add({
         "name": "Shubham",
@@ -3462,7 +3577,11 @@ def not_found(e):
 
 @app.errorhandler(500)
 def server_error(e):
-    return jsonify({'error': 'Internal server error'}), 500
+    logger.error(f"Internal server error: {str(e)}")
+    return jsonify({
+        'error': 'Internal server error',
+        'message': str(e)
+    }), 500
 
 
 # ==================== RUN ====================
@@ -3499,4 +3618,5 @@ if __name__ == '__main__':
     print("📍 Open http://localhost:5000 in your browser")
     print("🛑 Press Ctrl+C to stop\n")
     
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
