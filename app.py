@@ -1,5 +1,12 @@
-# ...existing code...
-# ...existing code...
+
+import os
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+app = Flask(
+    __name__,
+    template_folder=os.path.join(BASE_DIR, "templates"),
+    static_folder=os.path.join(BASE_DIR, "static")
+)
 
 """
 Dark Web Leak Monitor - Web Application
@@ -23,11 +30,22 @@ from flask import Flask, render_template, request, jsonify, send_file, send_from
 from flask_cors import CORS
 # from flask_login import LoginManager, UserMixin, current_user, login_required, login_user, logout_user
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
-from breach_checker import BreachChecker
+# ...existing code...
+# --- UI ROUTES ---
+@app.route("/")
+def home():
+    try:
+        return render_template("index.html")
+    except Exception:
+        return "<h1>DarkWeb Monitor UI Working 🚀</h1>"
+
+@app.route("/test")
+def test():
+    return "Working 🚀"
 from email_checker import EmailChecker
 from risk_analyzer import RiskAnalyzer
 from password_generator import PasswordGenerator, PasswordConfig
@@ -611,63 +629,63 @@ def risk_assessment_page():
 # @login_required
 def security_advisor_page():
     """Security advisor page."""
-    return render_template('security_advisor.html')
+    return render_template('security_advisor.html', current_user=current_user)
 
 
 @app.route('/breach-timeline')
 # @login_required
 def breach_timeline_page():
     """Breach timeline visualization page."""
-    return render_template('breach_timeline.html')
+    return render_template('breach_timeline.html', current_user=current_user)
 
 
 @app.route('/quiz')
 # @login_required
 def quiz_page():
     """Cybersecurity quiz page."""
-    return render_template('quiz.html')
+    return render_template('quiz.html', current_user=current_user)
 
 
 @app.route('/cyber-tools')
 # @login_required
 def cyber_tools_page():
     """Cyber Tools dashboard page."""
-    return render_template('cyber_tools.html')
+    return render_template('cyber_tools.html', current_user=current_user)
 
 
 @app.route('/tools')
 # @login_required
 def tools_hub_page():
     """Categorized tools hub page."""
-    return render_template('tools_hub.html')
+    return render_template('tools_hub.html', current_user=current_user)
 
 
 @app.route('/metadata-extractor')
 # @login_required
 def metadata_extractor_page():
     """Metadata forensics extractor page."""
-    return render_template('metadata_extractor.html')
+    return render_template('metadata_extractor.html', current_user=current_user)
 
 
 @app.route('/steganography')
 # @login_required
 def steganography_page():
     """Steganography tool page — hide and extract messages in images."""
-    return render_template('steganography.html')
+    return render_template('steganography.html', current_user=current_user)
 
 
 @app.route('/attack-map')
 # @login_required
 def attack_map_page():
     """Live Global Cyber Attack Map page."""
-    return render_template('attack_map.html')
+    return render_template('attack_map.html', current_user=current_user)
 
 
 @app.route('/ip-threat-intel')
 # @login_required
 def ip_threat_intel_page():
     """SOC-Level IP Threat Intelligence Scanner page."""
-    return render_template('ip_threat_intel.html')
+    return render_template('ip_threat_intel.html', current_user=current_user)
 
 
 @app.route('/learning-mode')
@@ -949,7 +967,7 @@ def api_generate_password():
     }
     """
     try:
-        data = request.get_json(silent=True) or {} or {}
+        data = request.get_json(silent=True) or {}
         gen_type = data.get('type', 'random')
         length = data.get('length', 16)
         count = data.get('count', 1)
@@ -1056,7 +1074,7 @@ def api_generate_report():
         if not last_results:
             return jsonify({'error': 'No results to export'}), 400
         
-        data = request.get_json(silent=True) or {} or {}
+        data = request.get_json(silent=True) or {}
         password = data.get('password', '********')
         
         filepath = report_generator.generate(
@@ -1089,7 +1107,7 @@ def api_export():
         if not last_results:
             return jsonify({'error': 'No results to export'}), 400
         
-        data = request.get_json(silent=True) or {} or {}
+        data = request.get_json(silent=True) or {}
         fmt = data.get('format', 'json')
         
         if fmt == 'all':
@@ -1123,16 +1141,15 @@ def api_export():
 def download_file(filename):
     """Download an exported file."""
     try:
-        if ".." in filename:
+        if ".." in filename or "/" in filename or "\\" in filename:
+            return jsonify({'error': 'Invalid filename'}), 400
+        filename = secure_filename(filename)
+        if not filename:
             return jsonify({'error': 'Invalid filename'}), 400
         # Check exports folder first
         exports_path = os.path.join(os.getcwd(), 'exports')
         if os.path.exists(os.path.join(exports_path, filename)):
             return send_from_directory(exports_path, filename, as_attachment=True)
-        
-        # Check current directory
-        if os.path.exists(filename):
-            return send_file(filename, as_attachment=True)
         
         return jsonify({'error': 'File not found'}), 404
         
@@ -1306,7 +1323,7 @@ def api_whois_lookup():
     global last_results
 
     try:
-        data = request.get_json(silent=True) or {} or {}
+        data = request.get_json(silent=True) or {}
         domain = data.get('domain', '').strip()
 
         if not domain:
@@ -1454,7 +1471,7 @@ def api_security_recommendations():
     }
     """
     try:
-        data = request.get_json(silent=True) or {} or {}
+        data = request.get_json(silent=True) or {}
         
         # Set context
         security_advisor.set_context(data)
@@ -1481,7 +1498,7 @@ def api_quick_wins():
 def api_action_plan():
     """Generate security action plan."""
     try:
-        data = request.get_json(silent=True) or {} or {}
+        data = request.get_json(silent=True) or {}
         timeframe = data.get('timeframe', 'week')
         
         # Set context if provided
@@ -1794,7 +1811,7 @@ def _send_certificate_email(to_email, participant_name, certificate_id, result, 
                 <td style="padding:8px 12px; color:#e6edf3; text-align:right; border-bottom:1px solid #2d3548;">{cat_pct}%</td>
             </tr>'''
 
-    cert_url = f"http://localhost:8080/certificate/{certificate_id}"
+    cert_url = f"{request.host_url.rstrip('/').replace('http://', 'https://', 1)}/certificate/{certificate_id}"
 
     html_body = f'''<!DOCTYPE html>
 <html><head><meta charset="UTF-8"></head>
@@ -1907,7 +1924,7 @@ def api_generate_quiz():
     try:
         # Get parameters from query string or JSON body
         if request.method == 'POST':
-            data = request.get_json(silent=True) or {} or {}
+            data = request.get_json(silent=True) or {}
             count = data.get('count', 10)
             difficulty = data.get('difficulty', 'intermediate')
         else:
@@ -1971,7 +1988,7 @@ def api_quiz_start():
     """Start a new quiz session (static questions)."""
     try:
         # Check if AI mode is requested
-        data = request.get_json(silent=True) or {} or {}
+        data = request.get_json(silent=True) or {}
         use_ai = data.get('use_ai', False)
         difficulty = data.get('difficulty', 'intermediate')
         count = data.get('count', 10)
@@ -2262,6 +2279,8 @@ def certificate_history_page():
 # @login_required
 def api_certificate_history():
     """Get all certificates for the current logged-in user."""
+    if not db:
+        return jsonify({'success': False, 'certificates': [], 'error': 'Database unavailable'}), 503
     try:
         certs_ref = db.collection('quiz_certificates') \
             .where('user_id', '==', current_user.id) \
@@ -2275,7 +2294,8 @@ def api_certificate_history():
             certificates.append(d)
         return jsonify({'success': True, 'certificates': certificates})
     except Exception as e:
-        return jsonify({'success': True, 'certificates': []})
+        logger.error(f"Certificate history error: {e}")
+        return jsonify({'success': False, 'certificates': []}), 500
 
 
 @app.route('/api/verify-certificate', methods=['POST'])
@@ -2401,7 +2421,7 @@ def api_email_certificate():
     <tr><td style="padding:20px 30px;">
         <table width="100%" cellspacing="0" cellpadding="0" style="background:#0d1117; border-radius:8px;">
             <tr><td style="padding:12px 16px; color:#888; font-size:13px; border-bottom:1px solid #2d3548;">Certificate ID</td>
-            <td style="padding:12px 16px; color:#e6edf3;font-family:monospace;border-bottom:1px solid #2d3548;">{certificate_id}</td></tr>
+            <td style="padding:12px 16px; color:#e6edf3;font-family:monospace;border-bottom:1px solid #2d3548;">{cert_id}</td></tr>
             <tr><td style="padding:12px 16px; color:#888; font-size:13px; border-bottom:1px solid #2d3548;">Date</td>
             <td style="padding:12px 16px; color:#e6edf3;border-bottom:1px solid #2d3548;">{comp_time}</td></tr>
             <tr><td style="padding:12px 16px; color:#888; font-size:13px;">Issued By</td>
@@ -3292,7 +3312,8 @@ def api_ip_threat_intel_report():
         #     )
 
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f'ip_threat_report_{ip.replace(".", "_")}_{timestamp}.html'
+        safe_ip = secure_filename(ip.replace(".", "_"))
+        filename = f'ip_threat_report_{safe_ip}_{timestamp}.html'
         filepath = os.path.join('exports', filename)
         os.makedirs('exports', exist_ok=True)
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -3338,7 +3359,7 @@ def api_live_attacks():
                 resp = requests.get(
                     'https://otx.alienvault.com/api/v1/pulses/activity',
                     headers=headers,
-                    params={'limit': 10, 'modified_since': (datetime.now() - __import__('datetime').timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%S')},
+                    params={'limit': 10, 'modified_since': (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%S')},
                     timeout=15
                 )
                 if resp.status_code == 200:
@@ -3561,6 +3582,8 @@ PROTECTED_API_VIEWS = (
 def firebase_test():
     if not db:
         return "Firebase not configured", 503
+    if is_rate_limited(request.remote_addr, limit=5, window=300):
+        return "Rate limited", 429
 
     db.collection("test").add({
         "name": "Shubham",
